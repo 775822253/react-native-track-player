@@ -542,10 +542,20 @@ class MusicModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
 
     @ReactMethod
     fun getTrack(index: Int, callback: Promise) = scope.launch {
-        if (verifyServiceBoundOrReject(callback)) return@launch
+        if (verifyServiceBoundOrReject(callback) == true) return@launch
+        val service = musicService
+        if (service == null) {
+            callback.resolve(null)
+            return@launch
+        }
 
-        if (index >= 0 && index < musicService.tracks.size) {
-            callback.resolve(Arguments.fromBundle(musicService.tracks[index].originalItem))
+        if (index >= 0 && index < service.tracks.size) {
+            val item = service.tracks[index].originalItem
+            if (item != null) {
+                callback.resolve(Arguments.fromBundle(item))
+            } else {
+                callback.resolve(null)
+            }
         } else {
             callback.resolve(null)
         }
@@ -581,13 +591,30 @@ class MusicModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
 
     @ReactMethod
     fun getActiveTrack(callback: Promise) = scope.launch {
-        if (verifyServiceBoundOrReject(callback)) return@launch
-        callback.resolve(
-            if (musicService.tracks.isEmpty()) null
-            else Arguments.fromBundle(
-                musicService.tracks[musicService.getCurrentTrackIndex()].originalItem
-            )
-        )
+        if (verifyServiceBoundOrReject(callback) == true) return@launch
+        val service = musicService
+        if (service == null) {
+            callback.resolve(null)
+            return@launch
+        }
+
+        if (service.tracks.isEmpty()) {
+            callback.resolve(null)
+            return@launch
+        }
+
+        val index = service.getCurrentTrackIndex()
+        if (index < 0 || index >= service.tracks.size) {
+            callback.resolve(null)
+            return@launch
+        }
+
+        val item = service.tracks[index].originalItem
+        if (item != null) {
+            callback.resolve(Arguments.fromBundle(item))
+        } else {
+            callback.resolve(null)
+        }
     }
 
     @ReactMethod
