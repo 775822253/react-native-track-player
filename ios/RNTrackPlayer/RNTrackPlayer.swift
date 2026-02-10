@@ -477,16 +477,13 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
         print("Skipping to track:", index)
         do {
             try player.jumpToItem(atIndex: index, playWhenReady: player.playerState == .playing)
-            // 修复4：延迟seek，避免资源未加载完成
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                guard let self = self else { return }
-                if (initialTime >= 0) {
-                    self.seekTo(time: initialTime, resolve: resolve, reject: reject)
-                } else {
-                    resolve(NSNull())
-                }
-            }
             playerLock.unlock()
+            
+            if (initialTime >= 0) {
+                self.seekTo(time: initialTime, resolve: resolve, reject: reject)
+            } else {
+                resolve(NSNull())
+            }
         } catch {
             playerLock.unlock()
             reject("skip_error", "Failed to skip to track \(index)", error)
@@ -506,13 +503,10 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
         player.next()
         playerLock.unlock()
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self = self else { return }
-            if (initialTime >= 0) {
-                self.seekTo(time: initialTime, resolve: resolve, reject: reject)
-            } else {
-                resolve(NSNull())
-            }
+        if (initialTime >= 0) {
+            self.seekTo(time: initialTime, resolve: resolve, reject: reject)
+        } else {
+            resolve(NSNull())
         }
     }
 
@@ -528,13 +522,10 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
         player.previous()
         playerLock.unlock()
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self = self else { return }
-            if (initialTime >= 0) {
-                self.seekTo(time: initialTime, resolve: resolve, reject: reject)
-            } else {
-                resolve(NSNull())
-            }
+        if (initialTime >= 0) {
+            self.seekTo(time: initialTime, resolve: resolve, reject: reject)
+        } else {
+            resolve(NSNull())
         }
     }
 
@@ -726,7 +717,7 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
         playerLock.lock()
-        let serializedQueue = player.items.map { ($0 as? Track)?.toObject() ?? NSNull() }
+        let serializedQueue = player.items.map { ($0 as? Track)?.toObject() as Any ?? NSNull() }
         playerLock.unlock()
         
         resolve(serializedQueue)
