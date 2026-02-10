@@ -26,6 +26,7 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     private var sessionCategoryMode: AVAudioSession.Mode = .default
     private var sessionCategoryPolicy: AVAudioSession.RouteSharingPolicy = .default
     private var sessionCategoryOptions: AVAudioSession.CategoryOptions = []
+    private let playerLock = NSLock()
 
     // MARK: - Lifecycle Methods
 
@@ -45,6 +46,17 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     }
 
     deinit {
+        // 补充：移除所有事件监听，避免内存泄漏
+        player.event.receiveChapterMetadata.removeListener(self)
+        player.event.receiveTimedMetadata.removeListener(self)
+        player.event.receiveCommonMetadata.removeListener(self)
+        player.event.stateChange.removeListener(self)
+        player.event.fail.removeListener(self)
+        player.event.currentItem.removeListener(self)
+        player.event.secondElapse.removeListener(self)
+        player.event.playWhenReadyChange.removeListener(self)
+        EventEmitter.shared.unregister(eventEmitter: self)
+        
         reset(resolve: { _ in }, reject: { _, _, _  in })
     }
 
@@ -112,7 +124,6 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     public func handleInterruption(type: InterruptionType) {
         switch type {
         case .began:
-            // Interruption began, take appropriate actions (save state, update user interface)
             emit(event: EventType.RemoteDuck, body: [
                 "paused": true
             ])
@@ -121,12 +132,10 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
                 if (shouldResumePlaybackAfterInterruptionEnds) {
                     player.play()
                 }
-                // Interruption Ended - playback should resume
                 emit(event: EventType.RemoteDuck, body: [
                     "paused": false
                 ])
             } else {
-                // Interruption Ended - playback should NOT resume
                 emit(event: EventType.RemoteDuck, body: [
                     "paused": true,
                     "permanent": true
@@ -166,24 +175,26 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
             return
         }
 
-        // configure buffer size
-        if let bufferDuration = config["minBuffer"] as? TimeInterval {
-            player.bufferDuration = bufferDuration
+        let minBuffer = config["minBuffer"] as? TimeInterval ?? 5.0
+        let maxBuffer = config["maxBuffer"] as? TimeInterval ?? 20.0
+        player.bufferDuration = minBuffer
+        guard let queuedPlayer = player as? QueuedAudioPlayer else {
+            reject("player_cast_error", "Failed to cast player to QueuedAudioPlayer", nil)
+            return
         }
+        queuedPlayer.minBufferDuration = 5.0
+        queuedPlayer.maxBufferDuration = maxBuffer
 
         if let autoHandleInterruptions = config["autoHandleInterruptions"] as? Bool {
             self.shouldResumePlaybackAfterInterruptionEnds = autoHandleInterruptions
         }
 
-        // configure wether player waits to play (deprecated)
         if let waitForBuffer = config["waitForBuffer"] as? Bool {
             player.automaticallyWaitsToMinimizeStalling = waitForBuffer
         }
 
-        // configure wether control center metdata should auto update
         player.automaticallyUpdateNowPlayingInfo = config["autoUpdateMetadata"] as? Bool ?? true
 
-        // configure audio session - category, options & mode
         if
             let sessionCategoryStr = config["iosCategory"] as? String,
             let mappedCategory = SessionCategory(rawValue: sessionCategoryStr) {
@@ -208,13 +219,11 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
 
         configureAudioSession()
 
-        // setup event listeners
         player.remoteCommandController.handleChangePlaybackPositionCommand = { [weak self] event in
             if let event = event as? MPChangePlaybackPositionCommandEvent {
                 self?.emit(event: EventType.RemoteSeek, body: ["position": event.positionTime])
                 return MPRemoteCommandHandlerStatus.success
             }
-
             return MPRemoteCommandHandlerStatus.commandFailed
         }
 
@@ -244,7 +253,6 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
                 self?.emit(event: EventType.RemoteJumpBackward, body: ["interval": interval])
                 return MPRemoteCommandHandlerStatus.success
             }
-
             return MPRemoteCommandHandlerStatus.commandFailed
         }
 
@@ -254,7 +262,6 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
                 self?.emit(event: EventType.RemoteJumpForward, body: ["interval": interval])
                 return MPRemoteCommandHandlerStatus.success
             }
-
             return MPRemoteCommandHandlerStatus.commandFailed
         }
 
@@ -264,11 +271,8 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
         }
 
         player.remoteCommandController.handleTogglePlayPauseCommand = { [weak self] _ in
-            self?.emit(event: self?.player.playerState == .paused
-                ? EventType.RemotePlay
-                : EventType.RemotePause
-            )
-
+            guard let self = self else { return MPRemoteCommandHandlerStatus.commandFailed }
+            self.emit(event: self.player.playerState == .paused ? EventType.RemotePlay : EventType.RemotePause)
             return MPRemoteCommandHandlerStatus.success
         }
 
@@ -291,30 +295,29 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
         resolve(NSNull())
     }
 
-
     private func configureAudioSession() {
+        do {
+            if #available(iOS 11.0, *) {
+                try AVAudioSession.sharedInstance().setCategory(sessionCategory, mode: sessionCategoryMode, policy: sessionCategoryPolicy, options: sessionCategoryOptions)
+            } else {
+                try AVAudioSession.sharedInstance().setCategory(sessionCategory, mode: sessionCategoryMode, options: sessionCategoryOptions)
+            }
+        } catch {
+            print("Failed to set audio session category: \(error)")
+        }
 
-        // deactivate the session when there is no current item to be played
         if (player.currentItem == nil) {
             try? audioSessionController.deactivateSession()
             return
         }
         
-        // activate the audio session when there is an item to be played
-        // and the player has been configured to start when it is ready loading:
         if (player.playWhenReady) {
             try? audioSessionController.activateSession()
-            if #available(iOS 11.0, *) {
-                try? AVAudioSession.sharedInstance().setCategory(sessionCategory, mode: sessionCategoryMode, policy: sessionCategoryPolicy, options: sessionCategoryOptions)
-            } else {
-                try? AVAudioSession.sharedInstance().setCategory(sessionCategory, mode: sessionCategoryMode, options: sessionCategoryOptions)
-            }
         }
     }
 
     @objc(isServiceRunning:rejecter:)
     public func isServiceRunning(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
-        // TODO That is probably always true
         resolve(player != nil)
     }
 
@@ -363,7 +366,6 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
         resolve: RCTPromiseResolveBlock,
         reject: RCTPromiseRejectBlock
     ) {
-        // -1 means no index was passed and therefore should be inserted at the end.
         let index = trackIndex.intValue == -1 ? player.items.count : trackIndex.intValue;
         if (rejectWhenNotInitialized(reject: reject)) { return }
         if (rejectWhenTrackIndexOutOfBounds(
@@ -378,14 +380,10 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
                 reject("invalid_track_object", "Track is missing a required key", nil)
                 return
             }
-
             tracks.append(track)
         }
 
-        try? player.add(
-            items: tracks,
-            at: index
-        )
+        try? player.add(items: tracks, at: index)
         resolve(index)
     }
 
@@ -415,8 +413,6 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
             }
         }
 
-        // Sort the indexes in descending order so we can safely remove them one by one
-        // without having the next index possibly newly pointing to another item than intended:
         for index in indexes.sorted().reversed() {
             try? player.removeItem(at: index)
         }
@@ -447,7 +443,6 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
         resolve(NSNull())
     }
 
-
     @objc(removeUpcomingTracks:rejecter:)
     public func removeUpcomingTracks(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
@@ -465,16 +460,28 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     ) {
         let index = trackIndex.intValue;
         if (rejectWhenTrackIndexOutOfBounds(index: index, reject: reject)) { return }
-
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
-        print("Skipping to track:", index)
-        try? player.jumpToItem(atIndex: index, playWhenReady: player.playerState == .playing)
+        playerLock.lock()
+        defer {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.playerLock.unlock()
+            }
+        }
 
-        // if an initialTime is passed the seek to it
-        if (initialTime >= 0) {
-            self.seekTo(time: initialTime, resolve: resolve, reject: reject)
-        } else {
+        print("Skipping to track:", index)
+        do {
+            try player.jumpToItem(atIndex: index, playWhenReady: player.playerState == .playing)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self = self else { return }
+                if (initialTime >= 0) {
+                    self.seekTo(time: initialTime, resolve: resolve, reject: reject)
+                } else {
+                    resolve(NSNull())
+                }
+            }
+        } catch {
+            reject("skip_error", "Failed to skip to track \(index)", error)
             resolve(NSNull())
         }
     }
@@ -487,13 +494,21 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     ) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
-        player.next()
+        playerLock.lock()
+        defer {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.playerLock.unlock()
+            }
+        }
 
-        // if an initialTime is passed the seek to it
-        if (initialTime >= 0) {
-            self.seekTo(time: initialTime, resolve: resolve, reject: reject)
-        } else {
-            resolve(NSNull())
+        player.next()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self = self else { return }
+            if (initialTime >= 0) {
+                self.seekTo(time: initialTime, resolve: resolve, reject: reject)
+            } else {
+                resolve(NSNull())
+            }
         }
     }
 
@@ -505,13 +520,21 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     ) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
-        player.previous()
+        playerLock.lock()
+        defer {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.playerLock.unlock()
+            }
+        }
 
-        // if an initialTime is passed the seek to it
-        if (initialTime >= 0) {
-            self.seekTo(time: initialTime, resolve: resolve, reject: reject)
-        } else {
-            resolve(NSNull())
+        player.previous()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self = self else { return }
+            if (initialTime >= 0) {
+                self.seekTo(time: initialTime, resolve: resolve, reject: reject)
+            } else {
+                resolve(NSNull())
+            }
         }
     }
 
@@ -519,44 +542,94 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     public func reset(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
+        playerLock.lock()
         player.stop()
         player.clear()
+        playerLock.unlock()
         resolve(NSNull())
     }
 
     @objc(play:rejecter:)
     public func play(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
-        player.play()
-        resolve(NSNull())
+        
+        var retryCount = 3
+        DispatchQueue.global().async { [weak self] in
+            guard let self = self else { 
+                DispatchQueue.main.async {
+                    reject("player_deallocated", "Player instance deallocated", nil)
+                }
+                return 
+            }
+            
+            while retryCount > 0 {
+                self.playerLock.lock()
+                do {
+                    try self.player.play()
+                    self.playerLock.unlock()
+                    DispatchQueue.main.async {
+                        resolve(NSNull())
+                    }
+                    return
+                } catch let error as AudioPlayerError {
+                    self.playerLock.unlock()
+                    retryCount -= 1
+                    if retryCount == 0 {
+                        DispatchQueue.main.async {
+                            reject("playback_error", error.localizedDescription, error)
+                            self.reset(resolve: { _ in }, reject: { _, _, _ in })
+                        }
+                        return
+                    }
+                    Thread.sleep(forTimeInterval: 0.5)
+                } catch {
+                    self.playerLock.unlock()
+                    DispatchQueue.main.async {
+                        reject("play_unknown_error", error.localizedDescription, error)
+                    }
+                    return
+                }
+            }
+        }
     }
 
     @objc(pause:rejecter:)
     public func pause(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
+        playerLock.lock()
         player.pause()
+        playerLock.unlock()
         resolve(NSNull())
     }
 
     @objc(setPlayWhenReady:resolver:rejecter:)
     public func setPlayWhenReady(playWhenReady: Bool, resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
+        
+        playerLock.lock()
         player.playWhenReady = playWhenReady
+        playerLock.unlock()
         resolve(NSNull())
     }
 
     @objc(getPlayWhenReady:rejecter:)
     public func getPlayWhenReady(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
-        resolve(player.playWhenReady)
+        
+        playerLock.lock()
+        let playWhenReady = player.playWhenReady
+        playerLock.unlock()
+        resolve(playWhenReady)
     }
 
     @objc(stop:rejecter:)
     public func stop(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
+        playerLock.lock()
         player.stop()
+        playerLock.unlock()
         resolve(NSNull())
     }
 
@@ -564,7 +637,9 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     public func seekTo(time: Double, resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
+        playerLock.lock()
         player.seek(to: time)
+        playerLock.unlock()
         resolve(NSNull())
     }
 
@@ -572,14 +647,19 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     public func seekBy(offset: Double, resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
+        playerLock.lock()
         player.seek(by: offset)
+        playerLock.unlock()
         resolve(NSNull())
     }
 
     @objc(retry:rejecter:)
     public func retry(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
+        
+        playerLock.lock()
         player.reload(startFromCurrentTime: true)
+        playerLock.unlock()
         resolve(NSNull())
     }
 
@@ -587,64 +667,82 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     public func setRepeatMode(repeatMode: NSNumber, resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
+        playerLock.lock()
         player.repeatMode = SwiftAudioEx.RepeatMode(rawValue: repeatMode.intValue) ?? .off
+        playerLock.unlock()
         resolve(NSNull())
     }
 
     @objc(getRepeatMode:rejecter:)
     public func getRepeatMode(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
-
-        resolve(player.repeatMode.rawValue)
+        
+        playerLock.lock()
+        let repeatMode = player.repeatMode.rawValue
+        playerLock.unlock()
+        resolve(repeatMode)
     }
 
     @objc(setVolume:resolver:rejecter:)
     public func setVolume(level: Float, resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
+        playerLock.lock()
         player.volume = level
+        playerLock.unlock()
         resolve(NSNull())
     }
 
     @objc(getVolume:rejecter:)
     public func getVolume(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
-
-        resolve(player.volume)
+        
+        playerLock.lock()
+        let volume = player.volume
+        playerLock.unlock()
+        resolve(volume)
     }
 
     @objc(setRate:resolver:rejecter:)
     public func setRate(rate: Float, resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
+        playerLock.lock()
         player.rate = rate
+        playerLock.unlock()
         resolve(NSNull())
     }
 
     @objc(getRate:rejecter:)
     public func getRate(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
-
-        resolve(player.rate)
+        
+        playerLock.lock()
+        let rate = player.rate
+        playerLock.unlock()
+        resolve(rate)
     }
 
     @objc(getTrack:resolver:rejecter:)
     public func getTrack(index: NSNumber, resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
-        if (index.intValue >= 0 && index.intValue < player.items.count) {
-            let track = player.items[index.intValue]
-            resolve((track as? Track)?.toObject())
-        } else {
-            resolve(NSNull())
-        }
+        playerLock.lock()
+        let track = index.intValue >= 0 && index.intValue < player.items.count 
+            ? (player.items[index.intValue] as? Track)?.toObject() 
+            : nil
+        playerLock.unlock()
+        
+        resolve(track ?? NSNull())
     }
 
     @objc(getQueue:rejecter:)
     public func getQueue(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
+        playerLock.lock()
         let serializedQueue = player.items.map { ($0 as! Track).toObject() }
+        playerLock.unlock()
         resolve(serializedQueue)
     }
 
@@ -662,32 +760,40 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
                 reject("invalid_track_object", "Track is missing a required key", nil)
                 return
             }
-
             tracks.append(track)
         }
+        
+        playerLock.lock()
         player.clear()
         try? player.add(items: tracks)
-        resolve(index)
+        let queueCount = player.items.count
+        playerLock.unlock()
+        
+        resolve(queueCount - 1)
     }
 
     @objc(getActiveTrack:rejecter:)
     public func getActiveTrack(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
+        playerLock.lock()
         let index = player.currentIndex
-        if (index >= 0 && index < player.items.count) {
-            let track = player.items[index]
-            resolve((track as? Track)?.toObject())
-        } else {
-            resolve(NSNull())
-        }
+        let track = index >= 0 && index < player.items.count 
+            ? (player.items[index] as? Track)?.toObject() 
+            : nil
+        playerLock.unlock()
+        
+        resolve(track ?? NSNull())
     }
 
     @objc(getActiveTrackIndex:rejecter:)
     public func getActiveTrackIndex(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
+        playerLock.lock()
         let index = player.currentIndex
+        playerLock.unlock()
+        
         if index < 0 || index >= player.items.count {
             resolve(NSNull())
         } else {
@@ -699,37 +805,54 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     public func getDuration(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
-        resolve(player.duration)
+        playerLock.lock()
+        let duration = player.duration
+        playerLock.unlock()
+        resolve(duration)
     }
 
     @objc(getBufferedPosition:rejecter:)
     public func getBufferedPosition(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
-        resolve(player.bufferedPosition)
+        playerLock.lock()
+        let bufferedPosition = player.bufferedPosition
+        playerLock.unlock()
+        resolve(bufferedPosition)
     }
 
     @objc(getPosition:rejecter:)
     public func getPosition(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
-        resolve(player.currentTime)
+        playerLock.lock()
+        let currentTime = player.currentTime
+        playerLock.unlock()
+        resolve(currentTime)
     }
 
     @objc(getProgress:rejecter:)
     public func getProgress(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
-        resolve([
+
+        playerLock.lock()
+        let progress = [
             "position": player.currentTime,
             "duration": player.duration,
             "buffered": player.bufferedPosition
-        ])
+        ]
+        playerLock.unlock()
+        resolve(progress)
     }
 
     @objc(getPlaybackState:rejecter:)
     public func getPlaybackState(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
-        resolve(getPlaybackStateBodyKeyValues(state: player.playerState))
+
+        playerLock.lock()
+        let stateBody = getPlaybackStateBodyKeyValues(state: player.playerState)
+        playerLock.unlock()
+        resolve(stateBody)
     }
 
     @objc(updateMetadataForTrack:metadata:resolver:rejecter:)
@@ -738,12 +861,17 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
         if (rejectWhenNotInitialized(reject: reject)) { return }
         if (rejectWhenTrackIndexOutOfBounds(index: index, reject: reject)) { return }
 
-        let track : Track = player.items[index] as! Track;
+        playerLock.lock()
+        guard let track = player.items[index] as? Track else {
+            playerLock.unlock()
+            reject("invalid_track", "Track at index \(index) is not a valid Track instance", nil)
+            return
+        }
         track.updateMetadata(dictionary: metadata)
-
         if (player.currentIndex == index) {
             Metadata.update(for: player, with: metadata)
         }
+        playerLock.unlock()
 
         resolve(NSNull())
     }
@@ -752,7 +880,9 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     public func clearNowPlayingMetadata(resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
+        playerLock.lock()
         player.nowPlayingInfoController.clear()
+        playerLock.unlock()
         resolve(NSNull())
     }
 
@@ -760,7 +890,9 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     public func updateNowPlayingMetadata(metadata: [String: Any], resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock) {
         if (rejectWhenNotInitialized(reject: reject)) { return }
 
+        playerLock.lock()
         Metadata.update(for: player, with: metadata)
+        playerLock.unlock()
         resolve(NSNull())
     }
 
@@ -827,14 +959,21 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
         let metadataItems = MetadataAdapter.convertToGroupedMetadata(metadataGroups: metadata);
         emit(event: EventType.MetadataTimedReceived, body: ["metadata": metadataItems])
         
-        // SwiftAudioEx was updated to return the array of timed metadata
-        // Until we have support for that in RNTP, we take the first item to keep existing behaviour.
         let metadata = metadata.first?.items ?? []
         let metadataItem = MetadataAdapter.legacyConversion(metadata: metadata)
         emit(event: EventType.PlaybackMetadataReceived, body: metadataItem)
     }
 
     func handleAudioPlayerFailed(error: Error?) {
+        if let error = error as? AudioPlayerError {
+            switch error {
+            case .playbackError, .failedToLoadKeyValue, .invalidSourceUrl, .notConnectedToInternet:
+                reset(resolve: { _ in }, reject: { _, _, _ in })
+            default:
+                break
+            }
+        }
+        
         emit(event: EventType.PlaybackError, body: ["error": error?.localizedDescription])
     }
 
@@ -845,12 +984,10 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
         lastIndex: Int?,
         lastPosition: Double?
     ) {
-
         if let item = item {
             DispatchQueue.main.async {
                 UIApplication.shared.beginReceivingRemoteControlEvents();
             }
-            // Update now playing controller with isLiveStream option from track
             if self.player.automaticallyUpdateNowPlayingInfo {
                 let isTrackLiveStream = (item as? Track)?.isLiveStream ?? false
                 self.player.nowPlayingInfoController.set(keyValue: NowPlayingInfoProperty.isLiveStream(isTrackLiveStream))
@@ -883,7 +1020,6 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
         }
         emit(event: EventType.PlaybackActiveTrackChanged, body: a)
 
-        // deprecated:
         var b: Dictionary<String, Any> = ["position": lastPosition ?? 0]
         if let lastIndex = lastIndex {
             b["lastIndex"] = lastIndex
@@ -895,11 +1031,6 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     }
 
     func handleAudioPlayerSecondElapse(seconds: Double) {
-        // because you cannot prevent the `event.secondElapse` from firing
-        // do not emit an event if `progressUpdateEventInterval` is nil
-        // additionally, there are certain instances in which this event is emitted
-        // _after_ a manipulation to the queu causing no currentItem to exist (see reset)
-        // in which case we shouldn't emit anything or we'll get an exception.
         if !shouldEmitProgressEvent || player.currentItem == nil { return }
         emit(
             event: EventType.PlaybackProgressUpdated,
