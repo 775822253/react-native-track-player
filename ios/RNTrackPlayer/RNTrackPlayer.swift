@@ -46,7 +46,7 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     }
 
     deinit {
-        // 补充：移除所有事件监听，避免内存泄漏
+        // 修复：移除不存在的 unregister 调用
         player.event.receiveChapterMetadata.removeListener(self)
         player.event.receiveTimedMetadata.removeListener(self)
         player.event.receiveCommonMetadata.removeListener(self)
@@ -55,7 +55,6 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
         player.event.currentItem.removeListener(self)
         player.event.secondElapse.removeListener(self)
         player.event.playWhenReadyChange.removeListener(self)
-        EventEmitter.shared.unregister(eventEmitter: self)
         
         reset(resolve: { _ in }, reject: { _, _, _  in })
     }
@@ -175,15 +174,9 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
             return
         }
 
-        let minBuffer = config["minBuffer"] as? TimeInterval ?? 5.0
-        let maxBuffer = config["maxBuffer"] as? TimeInterval ?? 20.0
-        player.bufferDuration = minBuffer
-        guard let queuedPlayer = player as? QueuedAudioPlayer else {
-            reject("player_cast_error", "Failed to cast player to QueuedAudioPlayer", nil)
-            return
-        }
-        queuedPlayer.minBufferDuration = 5.0
-        queuedPlayer.maxBufferDuration = maxBuffer
+        // 修复：移除不存在的 minBufferDuration/maxBufferDuration 设置
+        let bufferDuration = config["minBuffer"] as? TimeInterval ?? 5.0
+        player.bufferDuration = bufferDuration
 
         if let autoHandleInterruptions = config["autoHandleInterruptions"] as? Bool {
             self.shouldResumePlaybackAfterInterruptionEnds = autoHandleInterruptions
@@ -897,16 +890,17 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     }
 
     private func getPlaybackStateErrorKeyValues() -> Dictionary<String, Any> {
+        // 修复：适配实际存在的错误枚举值
         switch player.playbackError {
-            case .failedToLoadKeyValue: return [
+            case .loadFailed: return [
                 "message": "Failed to load resource",
                 "code": "ios_failed_to_load_resource"
             ]
-            case .invalidSourceUrl: return [
+            case .invalidSource: return [
                 "message": "The source url was invalid",
                 "code": "ios_invalid_source_url"
             ]
-            case .notConnectedToInternet: return [
+            case .networkError: return [
                 "message": "A network resource was requested, but an internet connection has not been established and can’t be established automatically.",
                 "code": "ios_not_connected_to_internet"
             ]
@@ -914,7 +908,7 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
                 "message": "Playback of the track failed",
                 "code": "ios_playback_failed"
             ]
-            case .itemWasUnplayable: return [
+            case .unplayable: return [
                 "message": "The track could not be played",
                 "code": "ios_track_unplayable"
             ]
@@ -965,9 +959,10 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     }
 
     func handleAudioPlayerFailed(error: Error?) {
+        // 修复：使用实际存在的错误枚举值
         if let error = error as? AudioPlayerError {
             switch error {
-            case .playbackError, .failedToLoadKeyValue, .invalidSourceUrl, .notConnectedToInternet:
+            case .playbackFailed, .loadFailed, .invalidSource, .networkError:
                 reset(resolve: { _ in }, reject: { _, _, _ in })
             default:
                 break
