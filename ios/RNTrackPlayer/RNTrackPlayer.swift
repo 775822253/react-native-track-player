@@ -2241,13 +2241,13 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
             }
             
             // 新增：检查播放器是否准备好（只有 ready/playing/buffering 状态才更新进度）
-            let isPlayerReadyForProgress = playerState == .ready ||
-                                          playerState == .playing ||
-                                          playerState == .buffering
+//            let isPlayerReadyForProgress = playerState == .ready ||
+//                                          playerState == .playing ||
+//                                          playerState == .buffering
             
             if !self.shouldEmitProgressEvent ||
                self.player.currentItem == nil ||
-               !isPlayerReadyForProgress {
+                self.isPlayerInErrorState {
                 print("跳过进度更新: playerState=\(playerState), hasItem=\(self.player.currentItem != nil)")
                 return
             }
@@ -2258,7 +2258,7 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
                 "buffered": self.player.bufferedPosition,
                 "track": self.player.currentIndex,
             ]
-            
+//            print("发送更新进度emit")
             DispatchQueue.main.async {
                 self.emit(event: EventType.PlaybackProgressUpdated, body: progressBody)
             }
