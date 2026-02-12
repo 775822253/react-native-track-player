@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.flow
 import java.util.concurrent.TimeUnit
 import kotlin.system.exitProcess
 import timber.log.Timber
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 
 @MainThread
 class MusicService : HeadlessJsTaskService() {
@@ -741,9 +742,10 @@ class MusicService : HeadlessJsTaskService() {
 
     @MainThread
     private fun emit(event: String, data: Bundle? = null) {
-        reactNativeHost.reactInstanceManager.currentReactContext
-            ?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-            ?.emit(event, data?.let { Arguments.fromBundle(it) })
+        val intent = Intent(MusicEvents.EVENT_INTENT)
+        intent.putExtra("event", event)
+        intent.putExtra("data", data)
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
     }
 
     @MainThread
