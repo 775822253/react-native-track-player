@@ -40,7 +40,7 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
     
     // 新增：重试机制
     private var retryCount: Int = 0
-    private let maxRetryCount: Int = 5
+    private let maxRetryCount: Int = 2
     private var isRetrying: Bool = false
     private var currentRetryTask: DispatchWorkItem?
     
@@ -529,19 +529,35 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
                         try self.player.reload(startFromCurrentTime: false)
                     }
                     
+                    
                     // 等待一小段时间让播放器稳定
-                    Thread.sleep(forTimeInterval: 0.1)
+                    Thread.sleep(forTimeInterval: 0.3)
+                    let newState = self.player.playerState
                     
                     // 如果播放器之前是播放状态，尝试恢复播放
-                    if self.player.playWhenReady {
+                    if newState == .ready || newState == .buffering {
+//                        self.player.playWhenReady = true
                         try self.player.play()
                         print("第 \(self.retryCount)/\(self.maxRetryCount) 次重试成功！")
                         
-                        // 重置重试状态
-                        self.resetRetryState()
+                        // 再次检查播放后的状态
+                        Thread.sleep(forTimeInterval: 0.1)
+                        let finalState = self.player.playerState
+                        
+                        if finalState == .playing || finalState == .buffering {
+                            print("第 \(self.retryCount)/\(self.maxRetryCount) 次重试成功！")
+                            self.resetRetryState()
+                        } else {
+                            // 播放失败，再次重置 playWhenReady
+//                            self.player.playWhenReady = false
+                            print("第 \(self.retryCount)/\(self.maxRetryCount) 次重试失败：播放后状态为 \(finalState)")
+                            self.isPlayerInErrorState = true
+                        }
+                        self.isRetrying = false
                     } else {
-                        print("第 \(self.retryCount)/\(self.maxRetryCount) 次重试成功，但播放器设置为不自动播放")
-                        self.resetRetryState()
+                        print("第 \(self.retryCount)/\(self.maxRetryCount) 次重试不成功")
+                        self.isPlayerInErrorState = true
+                        self.isRetrying = false
                     }
                     
                 } catch {
@@ -549,10 +565,12 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
                     
                     // 关键修复：重试失败时，重新标记为错误状态
                     self.isPlayerInErrorState = true
+//                    self.player.playWhenReady = false
                     
                     // 检查是否需要继续重试
                     if self.retryCount < self.maxRetryCount {
                         print("将在 \(delay) 秒后进行第 \(self.retryCount + 1)/\(self.maxRetryCount) 次重试...")
+                        self.isRetrying = false
                         // 如果重试失败，继续重试
                         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                             self.retryPlaybackWithDelay()
@@ -569,6 +587,7 @@ public class RNTrackPlayer: RCTEventEmitter, AudioSessionControllerDelegate {
                                 "trackIndex": self.player.currentIndex
                             ])
                         }
+                        self.isRetrying = false
                         
                         // 自动跳转到下一首
                         self.autoSkipToNextPlayableTrack()
