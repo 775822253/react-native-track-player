@@ -61,7 +61,6 @@ class MusicService : HeadlessJsTaskService() {
 
     private var appKilledPlaybackBehavior = AppKilledPlaybackBehavior.CONTINUE_PLAYBACK
     private var stopForegroundGracePeriod: Int = DEFAULT_STOP_FOREGROUND_GRACE_PERIOD
-    private var hasCalledStartForeground = false
 
     val tracks: List<Track>
         get() = player.items.map { (it as TrackAudioItem).track }
@@ -160,18 +159,6 @@ class MusicService : HeadlessJsTaskService() {
 
         player = QueuedAudioPlayer(this@MusicService, playerConfig, bufferConfig, cacheConfig)
         player.automaticallyUpdateNotificationMetadata = automaticallyUpdateNotificationMetadata
-
-        // 加这一行：设置 mediaButtonReceiver，让华为控制中心能识别
-        val mediaButtonIntent = Intent(Intent.ACTION_MEDIA_BUTTON)
-        mediaButtonIntent.setClass(this, MusicService::class.java)
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        } else {
-            PendingIntent.FLAG_UPDATE_CURRENT
-        }
-        player.mediaSession.setMediaButtonReceiver(
-            PendingIntent.getService(this, 0, mediaButtonIntent, flags)
-        )
 
         observeEvents()
         setupForegrounding()
@@ -514,7 +501,7 @@ class MusicService : HeadlessJsTaskService() {
         var removeNotificationWhenNotOngoing = false
 
         fun startForegroundIfNecessary() {
-            if (hasCalledStartForeground) {
+            if (isForegroundService()) {
                 Timber.d("skipping foregrounding as the service is already foregrounded")
                 return
             }
@@ -523,7 +510,6 @@ class MusicService : HeadlessJsTaskService() {
                 return
             }
             try {
-                hasCalledStartForeground = true  // 改：标记已调用
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     startForeground(
                         notificationId!!,
@@ -591,10 +577,9 @@ class MusicService : HeadlessJsTaskService() {
                         notificationId = it.notificationId;
                         notification = it.notification;
                         if (it.ongoing) {
-                            // if (player.playWhenReady) {
-                            // startForegroundIfNecessary()
-                            // }
-                            startForegroundIfNecessary()
+                            if (player.playWhenReady) {
+                                startForegroundIfNecessary()
+                            }
                         } else if (shouldStopForeground()) {
                             // Allow the application a grace period to complete any actions
                             // that may necessitate keeping the service in a foreground state.
