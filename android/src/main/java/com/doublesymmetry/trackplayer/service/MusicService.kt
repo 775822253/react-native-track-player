@@ -160,6 +160,19 @@ class MusicService : HeadlessJsTaskService() {
 
         player = QueuedAudioPlayer(this@MusicService, playerConfig, bufferConfig, cacheConfig)
         player.automaticallyUpdateNotificationMetadata = automaticallyUpdateNotificationMetadata
+
+        // 加这一行：设置 mediaButtonReceiver，让华为控制中心能识别
+        val mediaButtonIntent = Intent(Intent.ACTION_MEDIA_BUTTON)
+        mediaButtonIntent.setClass(this, MusicService::class.java)
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        player.mediaSession.setMediaButtonReceiver(
+            PendingIntent.getService(this, 0, mediaButtonIntent, flags)
+        )
+
         observeEvents()
         setupForegrounding()
     }
