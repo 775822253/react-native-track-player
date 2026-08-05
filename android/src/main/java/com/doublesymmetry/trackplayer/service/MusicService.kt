@@ -61,6 +61,7 @@ class MusicService : HeadlessJsTaskService() {
 
     private var appKilledPlaybackBehavior = AppKilledPlaybackBehavior.CONTINUE_PLAYBACK
     private var stopForegroundGracePeriod: Int = DEFAULT_STOP_FOREGROUND_GRACE_PERIOD
+    private var hasCalledStartForeground = false
 
     val tracks: List<Track>
         get() = player.items.map { (it as TrackAudioItem).track }
@@ -500,7 +501,7 @@ class MusicService : HeadlessJsTaskService() {
         var removeNotificationWhenNotOngoing = false
 
         fun startForegroundIfNecessary() {
-            if (isForegroundService()) {
+            if (hasCalledStartForeground) {
                 Timber.d("skipping foregrounding as the service is already foregrounded")
                 return
             }
@@ -509,6 +510,7 @@ class MusicService : HeadlessJsTaskService() {
                 return
             }
             try {
+                hasCalledStartForeground = true  // 改：标记已调用
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     startForeground(
                         notificationId!!,
@@ -576,9 +578,10 @@ class MusicService : HeadlessJsTaskService() {
                         notificationId = it.notificationId;
                         notification = it.notification;
                         if (it.ongoing) {
-                            if (player.playWhenReady) {
-                                startForegroundIfNecessary()
-                            }
+                            // if (player.playWhenReady) {
+                            // startForegroundIfNecessary()
+                            // }
+                            startForegroundIfNecessary()
                         } else if (shouldStopForeground()) {
                             // Allow the application a grace period to complete any actions
                             // that may necessitate keeping the service in a foreground state.
